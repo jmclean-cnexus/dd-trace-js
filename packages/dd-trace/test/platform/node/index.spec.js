@@ -660,6 +660,58 @@ describe('Platform', () => {
       })
     })
 
+    describe('getScope', () => {
+      let platform
+      let processVersion
+      const ASYNC_LOCAL_STORAGE = { name: 'AsyncLocalStorage' }
+      const ASYNC_HOOKS = { name: 'async_hooks' }
+
+      beforeEach(() => {
+        platform = proxyquire('../src/platform/node/index', {
+          '../../scope/async_local_storage': ASYNC_LOCAL_STORAGE,
+          '../../scope/async_hooks': ASYNC_HOOKS
+        })
+        processVersion = process.versions.node
+      })
+
+      afterEach(() => {
+        Reflect.defineProperty(process.versions, 'node', {
+          value: processVersion,
+          configurable: true
+        })
+      })
+
+      it('should default to AsyncLocalStorage on supported versions, and async_hooks on unsupported versions', () => {
+        function assertVersion (version, als) {
+          Reflect.defineProperty(process.versions, 'node', {
+            value: version,
+            configurable: true
+          })
+          expect(platform.getScope()).to.equal(als ? ASYNC_LOCAL_STORAGE : ASYNC_HOOKS)
+        }
+        assertVersion('10.0.0', false)
+        assertVersion('12.0.0', false)
+        assertVersion('12.18.4', false)
+        assertVersion('12.18.5', true)
+        assertVersion('12.18.6', true)
+        assertVersion('12.19.0', true)
+        assertVersion('13.0.0', false)
+        assertVersion('14.0.0', false)
+        assertVersion('14.4.99', false)
+        assertVersion('14.5.0', true)
+        assertVersion('14.5.1', true)
+        assertVersion('14.6.0', true)
+        assertVersion('15.0.0', true)
+        assertVersion('16.0.0', true)
+        assertVersion('17.0.0', true)
+      })
+
+      it('should go with user choice when scope is defined in options', () => {
+        expect(platform.getScope('async_local_storage')).to.equal(ASYNC_LOCAL_STORAGE)
+        expect(platform.getScope('async_hooks')).to.equal(ASYNC_HOOKS)
+      })
+    })
+
     describe('exporter', () => {
       it('should create an AgentExporter by default', () => {
         const Exporter = proxyquire('../src/platform/node/exporter', {

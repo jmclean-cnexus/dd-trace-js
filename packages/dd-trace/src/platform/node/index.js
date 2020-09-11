@@ -17,6 +17,7 @@ const profiler = require('./profiler')
 const pkg = require('./pkg')
 const startupLog = require('./startup-log')
 const client = require('./client')
+const semver = require('semver')
 
 const emitter = new EventEmitter()
 
@@ -42,10 +43,19 @@ const platform = {
   off: emitter.removeListener.bind(emitter),
   Loader,
   getScope (scope) {
-    if (scope === scopes.ASYNC_LOCAL_STORAGE) {
-      return require('../../scope/async_local_storage')
+    if (!scope) {
+      if (hasSupportedAsyncLocalStorage()) {
+        return require('../../scope/async_local_storage')
+      } else {
+        return require('../../scope/async_hooks')
+      }
+    } else {
+      if (scope === scopes.ASYNC_LOCAL_STORAGE) {
+        return require('../../scope/async_local_storage')
+      } else {
+        return require('../../scope/async_hooks')
+      }
     }
-    return require('../../scope/async_hooks')
   },
   exporter,
   profiler () {
@@ -57,3 +67,7 @@ const platform = {
 process.once('beforeExit', () => emitter.emit('exit'))
 
 module.exports = platform
+
+function hasSupportedAsyncLocalStorage () {
+  return semver.satisfies(process.versions.node, '^14.5 || ^12.18.5 || >14')
+}

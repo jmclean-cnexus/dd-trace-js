@@ -12,40 +12,38 @@ const MEASURED = tags.MEASURED
 const ORIGIN_KEY = constants.ORIGIN_KEY
 const HOSTNAME_KEY = constants.HOSTNAME_KEY
 
-const map = {
-  'service.name': 'service',
-  'span.type': 'type',
-  'resource.name': 'resource'
-}
-
 function format (span) {
-  const formatted = formatSpan(span)
+  const formatted = new FormattedSpan(span)
 
-  extractError(formatted, span)
+  extractError(formatted.meta, span)
   extractTags(formatted, span)
-  extractAnalytics(formatted, span)
+  extractAnalytics(formatted.metrics, span)
 
   return formatted
 }
 
-function formatSpan (span) {
-  const spanContext = span.context()
+const ID_ZERO = id('0')
 
-  return {
-    trace_id: spanContext._traceId,
-    span_id: spanContext._spanId,
-    parent_id: spanContext._parentId || id('0'),
-    name: serialize(spanContext._name),
-    resource: serialize(spanContext._name),
-    error: 0,
-    meta: {},
-    metrics: {},
-    start: Math.round(span._startTime * 1e6),
-    duration: Math.round(span._duration * 1e6)
+class FormattedSpan {
+  constructor (span) {
+    const spanContext = span.context()
+
+    const name = serialize(spanContext._name)
+
+    this.trace_id = spanContext._traceId
+    this.span_id = spanContext._spanId
+    this.parent_id = spanContext._parentId || ID_ZERO
+    this.name = name
+    this.resource = name
+    this.error = 0
+    this.meta = {}
+    this.metrics = {}
+    this.start = Math.round(span._startTime * 1e6)
+    this.duration = Math.round(span._duration * 1e6)
   }
 }
 
-function extractTags (trace, span) {
+function extractTags (formattedSpan, span) {
   const context = span.context()
   const origin = context._trace.origin
   const tags = context._tags
@@ -53,69 +51,89 @@ function extractTags (trace, span) {
   const priority = context._sampling.priority
 
   for (const tag in tags) {
-    switch (tag) {
-      case 'service.name':
-      case 'span.type':
-      case 'resource.name':
-        addTag(trace, {}, map[tag], tags[tag])
-        break
-      // HACK: remove when Datadog supports numeric status code
-      case 'http.status_code':
-        addTag(trace.meta, {}, tag, tags[tag] && String(tags[tag]))
-        break
-      case HOSTNAME_KEY:
-      case ANALYTICS:
-        break
-      case MEASURED:
-        addTag({}, trace.metrics, tag, tags[tag] === undefined || tags[tag] ? 1 : 0)
-        break
-      case 'error':
-        if (tags[tag] && tags['span.kind'] !== 'internal') {
-          trace.error = 1
-        }
-        break
-      case 'error.type':
-      case 'error.msg':
-      case 'error.stack':
-        // HACK: remove when implemented in the backend
-        if (tags['span.kind'] !== 'internal') {
-          trace.error = 1
-        }
-      default: // eslint-disable-line no-fallthrough
-        addTag(trace.meta, trace.metrics, tag, tags[tag])
-    }
+    transferTag(formattedSpan, tags, tag, tags[tag])
   }
 
   if (span.tracer()._service === tags['service.name']) {
-    addTag(trace.meta, trace.metrics, 'language', 'javascript')
+    formattedSpan.meta.language = 'javascript'
   }
 
-  addTag(trace.meta, trace.metrics, SAMPLING_PRIORITY_KEY, priority)
-  addTag(trace.meta, trace.metrics, ORIGIN_KEY, origin)
-  addTag(trace.meta, trace.metrics, HOSTNAME_KEY, hostname)
+  if (typeof priority === 'number') {
+    formattedSpan.metrics[SAMPLING_PRIORITY_KEY] = priority
+  }
+  if (typeof origin === 'string') {
+    formattedSpan.meta[ORIGIN_KEY] = origin
+  }
+  if (typeof hostname === 'string') {
+    formattedSpan.meta[HOSTNAME_KEY] = hostname
+  }
 }
 
-function extractError (trace, span) {
+function transferTag (formattedSpan, tags, tag, value) {
+  switch (tag) {
+    case 'service.name':
+      formattedSpan.service = value
+      return
+    case 'span.type':
+      formattedSpan.type = value
+      return
+    case 'resource.name':
+      formattedSpan.resource = value
+      return
+      // HACK: remove when Datadog supports numeric status code
+    case 'http.status_code':
+      if (value) {
+        formattedSpan.meta['http.status_code'] = String(value)
+      }
+      return
+    case HOSTNAME_KEY:
+    case ANALYTICS:
+      return
+    case MEASURED:
+      formattedSpan.metrics[MEASURED] = value === undefined || value ? 1 : 0
+      return
+    case 'error':
+      if (value && tags['span.kind'] !== 'internal') {
+        formattedSpan.error = 1
+      }
+      return
+    case 'error.type':
+    case 'error.msg':
+    case 'error.stack':
+      // HACK: remove when implemented in the backend
+      if (tags['span.kind'] !== 'internal') {
+        formattedSpan.error = 1
+      }
+    default: // eslint-disable-line no-fallthrough
+      addTag(formattedSpan.meta, formattedSpan.metrics, tag, value)
+  }
+}
+
+function extractError (meta, span) {
   const error = span.context()._tags['error']
 
   if (error instanceof Error) {
-    trace.meta['error.msg'] = error.message
-    trace.meta['error.type'] = error.name
-    trace.meta['error.stack'] = error.stack
+    meta['error.msg'] = error.message
+    meta['error.type'] = error.name
+    meta['error.stack'] = error.stack
   }
 }
 
-function extractAnalytics (trace, span) {
+function extractAnalytics (metrics, span) {
   let analytics = span.context()._tags[ANALYTICS]
+  if (typeof analytics === 'undefined' || analytics === null) {
+    return
+  }
 
   if (analytics === true) {
-    analytics = 1
+    metrics[ANALYTICS_KEY] = 1
+    return
   } else {
     analytics = parseFloat(analytics)
   }
 
   if (!isNaN(analytics)) {
-    trace.metrics[ANALYTICS_KEY] = Math.max(Math.min(analytics, 1), 0)
+    metrics[ANALYTICS_KEY] = Math.max(Math.min(analytics, 1), 0)
   }
 }
 
@@ -167,6 +185,7 @@ function addObjectTag (meta, metrics, key, value, seen) {
 }
 
 function serialize (obj) {
+  if (typeof obj === 'string') return obj
   try {
     return obj && typeof obj.toString !== 'function' ? JSON.stringify(obj) : String(obj)
   } catch (e) {
